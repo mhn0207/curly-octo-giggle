@@ -1,0 +1,14 @@
+services:
+  zhiying-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zhiying-frontend
+    ports:
+      - "5174:80"
+    environment:
+      ZHIYING_API_UPSTREAM: host.docker.internal:8000
+      NGINX_ENVSUBST_FILTER: ZHIYING_API_UPSTREAM
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
