@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Response, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field as PydanticField
 
 load_dotenv()
 
@@ -111,6 +111,9 @@ async def lifespan(app: FastAPI):
         base_url=cfg.get("base_url"),
         model=cfg["model"],
         skill_manager=_skill_manager,
+        max_tool_steps=int(os.getenv("ZHIYING_AGENT_MAX_TOOL_STEPS", "4")),
+        request_timeout_s=float(os.getenv("ZHIYING_AGENT_REQUEST_TIMEOUT", "60")),
+        tool_calling_enabled=env_bool("ZHIYING_AGENT_TOOL_CALLING", True),
     )
 
     # 记忆管理器（Redis 工作记忆 + ChromaDB 情景记忆/用户画像）
@@ -204,6 +207,12 @@ async def lifespan(app: FastAPI):
         fallback=knowledge_fallback,
     ))
 
+    from mcp.business_tools import register_business_tools
+
+    register_business_tools(_tool_manager)
+    _orchestrator.set_tool_manager(_tool_manager)
+    logger.info("Business tools registered: %s", len(_tool_manager.tool_catalog()))
+
     # 性能监控（可选启动 Prometheus）
     prom_port = int(os.getenv("PROMETHEUS_PORT", "0")) or None
     _monitor = PerformanceMonitor(
@@ -265,12 +274,15 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     conv_id:     str
+    request_id:  str
     response:    str
     intent:      str
     agent_type:  str
     escalated:   bool
     latency_ms:  float
     knowledge_used: bool = False
+    tool_calls: List[Dict[str, Any]] = PydanticField(default_factory=list)
+    synthesis: Optional[Dict[str, Any]] = None
 
 
 # ── 路由 ──────────────────────────────────────────────────────────────────────
@@ -349,12 +361,15 @@ async def chat(req: ChatRequest):
 
     return ChatResponse(
         conv_id=conv_id,
+        request_id=result.request_id,
         response=result.response,
         intent=result.intent.value if result.intent else "other",
         agent_type=result.agent_type.value,
         escalated=result.escalated,
         latency_ms=round(result.latency_ms, 1),
         knowledge_used=knowledge_used,
+        tool_calls=result.tool_calls,
+        synthesis=result.synthesis,
     )
 
 
@@ -409,6 +424,30 @@ def _should_use_knowledge(message: str) -> bool:
         "refund", "order", "invoice", "payment", "error", "login",
     ]
     return len(msg) >= 4 or any(kw in msg for kw in business_keywords)
+
+
+@app.get("/tools", tags=["Tools"])
+async def tools_catalog():
+    """List controlled tools, risk levels, permissions, and runtime statistics."""
+    if _tool_manager is None:
+        raise HTTPException(503, "Tool runtime is not ready")
+    return {
+        "tools": _tool_manager.tool_catalog(),
+        "stats": _tool_manager.get_stats(),
+    }
+
+
+@app.get("/tools/executions", tags=["Tools"])
+async def tool_executions(limit: int = 50, request_id: Optional[str] = None):
+    """Return recent sanitized tool traces for debugging and demonstrations."""
+    if _tool_manager is None:
+        raise HTTPException(503, "Tool runtime is not ready")
+    return {
+        "executions": _tool_manager.get_recent_executions(
+            limit=limit,
+            request_id=request_id,
+        )
+    }
 
 
 @app.get("/monitor")
@@ -646,6 +685,9 @@ async def _cli():
     from agents.agent_orchestrator import AgentOrchestrator, Request
     from memory.conversation_memory import MemoryManager, MsgRole
     from core.skill_loader import SkillManager
+    from core.structured_invoker import env_bool
+    from mcp.business_tools import register_business_tools
+    from mcp.tool_manager import MCPToolManager
 
     cfg = _anthropic_cfg()
     skill_manager = SkillManager(
@@ -653,11 +695,22 @@ async def _cli():
         max_prompt_chars=int(os.getenv("ZHIYING_SKILLS_MAX_PROMPT_CHARS", "5000")),
     )
     skill_manager.load()
+    tool_manager = MCPToolManager(
+        api_key=cfg["api_key"],
+        base_url=cfg.get("base_url"),
+        model=cfg["model"],
+    )
+    register_business_tools(tool_manager)
+
     orch = AgentOrchestrator(
         api_key=cfg["api_key"],
         base_url=cfg.get("base_url"),
         model=cfg["model"],
         skill_manager=skill_manager,
+        tool_manager=tool_manager,
+        max_tool_steps=int(os.getenv("ZHIYING_AGENT_MAX_TOOL_STEPS", "4")),
+        request_timeout_s=float(os.getenv("ZHIYING_AGENT_REQUEST_TIMEOUT", "60")),
+        tool_calling_enabled=env_bool("ZHIYING_AGENT_TOOL_CALLING", True),
     )
     mem  = MemoryManager(
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),

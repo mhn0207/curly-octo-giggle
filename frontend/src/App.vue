@@ -9,12 +9,6 @@
         </div>
       </section>
 
-      <a class="profile-card" href="https://xhslink.com/m/558VOQs4Otc" target="_blank" rel="noreferrer">
-        <span>我的主页</span>
-        <strong>小红书 69.6K 次赞与收藏</strong>
-        <em>来看看我的主页 &gt;&gt;</em>
-      </a>
-
       <section class="panel">
         <div class="panel-heading">
           <h2>后端</h2>
@@ -70,7 +64,6 @@
           <p>{{ currentBackend.baseUrl }}</p>
         </div>
         <div class="header-actions">
-          <a class="profile-link" href="https://xhslink.com/m/558VOQs4Otc" target="_blank" rel="noreferrer">小红书主页</a>
           <a :href="docsUrl" target="_blank" rel="noreferrer">API 文档</a>
         </div>
       </header>
@@ -211,6 +204,10 @@ async function sendMessage() {
       response.intent,
       response.agentType,
       response.knowledgeUsed ? 'RAG' : '',
+      response.toolCalls?.length ? `Tools ${response.toolCalls.length}` : '',
+      response.synthesis?.agents?.length > 1
+        ? `综合 ${response.synthesis.agents.length} Agents`
+        : '',
       response.escalated ? '转人工' : ''
     ].filter(Boolean).join(' · ')
     messages.value.push({

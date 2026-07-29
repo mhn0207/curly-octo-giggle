@@ -127,39 +127,12 @@ textarea:focus {
   color: #637386;
 }
 
-.profile-card {
-  display: grid;
-  gap: 6px;
-  margin: 10px 0 18px;
-  padding: 15px;
-  border-radius: 8px;
-  color: #18202c;
-  text-decoration: none;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.90), rgba(240, 248, 255, 0.92)),
-    linear-gradient(135deg, #1769e0, #0f8b8d);
-  border: 1px solid rgba(196, 211, 226, 0.88);
-  box-shadow: 0 18px 35px rgba(24, 32, 44, 0.08);
-}
-
-.profile-card span,
 .eyebrow {
   color: #0f8b8d;
   font-size: 12px;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0;
-}
-
-.profile-card strong {
-  font-size: 16px;
-}
-
-.profile-card em {
-  color: #1769e0;
-  font-style: normal;
-  font-weight: 700;
-  font-size: 13px;
 }
 
 .panel,
@@ -358,11 +331,6 @@ pre {
   background: #eef5ff;
   font-weight: 800;
   text-decoration: none;
-}
-
-.workspace-header a.profile-link {
-  color: #0f8b8d;
-  background: #e6f6f4;
 }
 
 .chat-panel {

@@ -78,12 +78,15 @@ function normalizeChatResponse(raw) {
   return {
     backend: DEFAULT_BACKEND.id,
     conversationId: raw.conv_id || raw.conversation_id || raw.conversationId || '',
+    requestId: raw.request_id || raw.requestId || '',
     response: raw.response || '',
     intent: raw.intent || 'other',
     agentType: raw.agent_type || raw.agentType || '',
     escalated: Boolean(raw.escalated),
     latencyMs: Number(raw.latency_ms ?? raw.latencyMs ?? 0),
     knowledgeUsed: Boolean(raw.knowledge_used ?? raw.knowledgeUsed),
+    toolCalls: Array.isArray(raw.tool_calls) ? raw.tool_calls : [],
+    synthesis: raw.synthesis && typeof raw.synthesis === 'object' ? raw.synthesis : null,
     raw
   }
 }

@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from anthropic import AsyncAnthropic
 
+from agents.result_synthesizer import AgentWorkResult, SynthesisAgent
 from core.intent_recognizer import IntentCategory, IntentRecognizer, UrgencyLevel
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,8 @@ class AgentResponse:
     confidence:  float = 1.0
     latency_ms:  float = 0.0
     escalate:    bool  = False   # 是否需要升级
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    work_result: Optional[AgentWorkResult] = None
 
 
 @dataclass
@@ -94,6 +97,8 @@ class OrchestratorResult:
     intent:      Optional[IntentCategory]
     escalated:   bool  = False
     latency_ms:  float = 0.0
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
+    synthesis: Optional[Dict[str, Any]] = None
 
 
 # ── 基础 Agent ────────────────────────────────────────────────────────────────
@@ -103,41 +108,217 @@ class BaseAgent:
 
     agent_type: AgentType
     system_prompt: str
+    allowed_tools: tuple[str, ...] = ()
 
-    def __init__(self, client: AsyncAnthropic, model: str, skill_manager: Optional[Any] = None):
+    def __init__(
+        self,
+        client: AsyncAnthropic,
+        model: str,
+        skill_manager: Optional[Any] = None,
+        tool_manager: Optional[Any] = None,
+        max_tool_steps: int = 4,
+        request_timeout_s: float = 60.0,
+        tool_calling_enabled: bool = True,
+    ):
         self._client = client
-        self._model  = model
+        self._model = model
         self._skill_manager = skill_manager
-        self.stats   = AgentStats()
+        self._tool_manager = tool_manager
+        self._max_tool_steps = max(1, min(int(max_tool_steps), 8))
+        self._request_timeout_s = max(1.0, float(request_timeout_s))
+        self._tool_calling_enabled = tool_calling_enabled
+        self.stats = AgentStats()
 
     async def handle(self, req: Request) -> AgentResponse:
         t0 = time.monotonic()
         self.stats.total += 1
+        tool_calls: List[Dict[str, Any]] = []
         try:
-            content = await self._call_llm(req)
+            content = await asyncio.wait_for(
+                self._call_llm(req, tool_calls),
+                timeout=self._request_timeout_s,
+            )
             ms = (time.monotonic() - t0) * 1000
             self.stats.success += 1
             self.stats.total_ms += ms
             escalate = self._needs_escalation(content)
-            return AgentResponse(
+            response = AgentResponse(
                 agent_type=self.agent_type,
                 content=content,
                 success=True,
                 latency_ms=ms,
                 escalate=escalate,
+                tool_calls=tool_calls,
             )
+            response.work_result = AgentWorkResult.from_agent_response(response)
+            return response
         except Exception as ex:
             ms = (time.monotonic() - t0) * 1000
             self.stats.total_ms += ms
             logger.error(f"{self.agent_type.value} 处理失败: {ex}")
-            return AgentResponse(
+            response = AgentResponse(
                 agent_type=self.agent_type,
                 content="抱歉，处理您的请求时出现问题，请稍后重试。",
                 success=False,
                 latency_ms=ms,
+                tool_calls=tool_calls,
             )
+            response.work_result = AgentWorkResult.from_agent_response(response)
+            return response
 
-    async def _call_llm(self, req: Request) -> str:
+    async def _call_llm(
+        self,
+        req: Request,
+        tool_trace: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        tools = self._available_tool_definitions()
+        if not tools:
+            return await self._call_llm_legacy(req)
+
+        trace = tool_trace if tool_trace is not None else []
+        messages = self._initial_messages(req)
+        system_prompt = self._build_system_prompt(req)
+
+        for _ in range(self._max_tool_steps):
+            response = await self._client.messages.create(
+                model=self._model,
+                max_tokens=1024,
+                system=system_prompt,
+                messages=messages,
+                tools=tools,
+            )
+            blocks = list(getattr(response, "content", []) or [])
+            tool_uses = [
+                block
+                for block in blocks
+                if self._block_attr(block, "type", "") == "tool_use"
+            ]
+            if not tool_uses:
+                text = self._response_text(blocks)
+                return text or "No response content was generated."
+
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": [self._block_to_dict(block) for block in blocks],
+                }
+            )
+            tool_results = []
+            for block in tool_uses:
+                tool_name = str(self._block_attr(block, "name", ""))
+                tool_use_id = str(self._block_attr(block, "id", ""))
+                raw_input = self._block_attr(block, "input", {})
+                tool_input = dict(raw_input) if isinstance(raw_input, dict) else {}
+                result = await self._tool_manager.call(
+                    tool_name,
+                    tool_input,
+                    context={
+                        "agent_type": self.agent_type.value,
+                        "request_id": req.request_id,
+                        "user_id": req.user_id,
+                        "conv_id": req.conv_id,
+                    },
+                )
+                trace.append(
+                    {
+                        "tool_name": tool_name,
+                        "tool_use_id": tool_use_id,
+                        "input": tool_input,
+                        "success": result.success,
+                        "cached": result.cached,
+                        "latency_ms": round(result.latency_ms, 1),
+                        "error": result.error,
+                        "result": result.data,
+                    }
+                )
+                payload = {
+                    "success": result.success,
+                    "data": result.data,
+                    "error": result.error,
+                    "cached": result.cached,
+                }
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": json.dumps(payload, ensure_ascii=False, default=str),
+                        "is_error": not result.success,
+                    }
+                )
+            messages.append({"role": "user", "content": tool_results})
+
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "The controlled tool-call limit has been reached. "
+                    "Use only the tool results already returned, do not claim any unobserved action, "
+                    "and provide a concise final answer."
+                ),
+            }
+        )
+        response = await self._client.messages.create(
+            model=self._model,
+            max_tokens=1024,
+            system=system_prompt,
+            messages=messages,
+        )
+        return self._response_text(list(getattr(response, "content", []) or []))
+
+    def _available_tool_definitions(self) -> List[Dict[str, Any]]:
+        if not self._tool_calling_enabled or self._tool_manager is None:
+            return []
+        return self._tool_manager.definitions_for(
+            self.agent_type.value,
+            list(self.allowed_tools),
+        )
+
+    def _initial_messages(self, req: Request) -> List[Dict[str, Any]]:
+        def clean(value: str) -> str:
+            return value.encode("utf-8", errors="ignore").decode("utf-8")
+
+        messages: List[Dict[str, Any]] = []
+        background = []
+        if req.context:
+            background.append(f"[context]\n{clean(req.context)}")
+        if req.entities and any(req.entities.values()):
+            entity_text = json.dumps(req.entities, ensure_ascii=False)
+            background.append(f"[extracted_entities]\n{clean(entity_text)}")
+        if background:
+            messages.append({"role": "user", "content": "\n\n".join(background)})
+            messages.append({"role": "assistant", "content": "Context received."})
+        messages.append({"role": "user", "content": clean(req.message)})
+        return messages
+
+    @staticmethod
+    def _block_attr(block: Any, name: str, default: Any = None) -> Any:
+        if isinstance(block, dict):
+            return block.get(name, default)
+        return getattr(block, name, default)
+
+    @classmethod
+    def _block_to_dict(cls, block: Any) -> Dict[str, Any]:
+        if isinstance(block, dict):
+            return dict(block)
+        model_dump = getattr(block, "model_dump", None)
+        if callable(model_dump):
+            return model_dump(mode="json")
+        result: Dict[str, Any] = {}
+        for name in ("type", "id", "name", "input", "text"):
+            value = cls._block_attr(block, name, None)
+            if value is not None:
+                result[name] = value
+        return result
+
+    @classmethod
+    def _response_text(cls, blocks: List[Any]) -> str:
+        return "\n".join(
+            str(cls._block_attr(block, "text", "")).strip()
+            for block in blocks
+            if cls._block_attr(block, "text", "")
+        ).strip()
+
+    async def _call_llm_legacy(self, req: Request) -> str:
         def _clean(s: str) -> str:
             return s.encode("utf-8", errors="ignore").decode("utf-8")
 
@@ -162,6 +343,22 @@ class BaseAgent:
         return resp.content[0].text
 
     def _build_system_prompt(self, req: Request) -> str:
+        base_prompt = self._build_system_prompt_legacy(req)
+        if not self._available_tool_definitions():
+            return base_prompt
+        return base_prompt + (
+            "\n\n[Controlled business tools]\n"
+            "Use tools whenever the user asks about a concrete order, payment, or refund. "
+            "Never invent order status, payment records, identifiers, or operation outcomes. "
+            "Only call tools listed for your role. Treat tool errors as failures, not facts. "
+            "Before creating a refund request, first verify the order and payment records. "
+            "create_refund_request only creates a pending_review request; it never moves money. "
+            "Call it only when the user explicitly requests a refund. "
+            "In the final response, distinguish verified facts from recommendations and state "
+            "whether a write operation is pending review."
+        )
+
+    def _build_system_prompt_legacy(self, req: Request) -> str:
         """把动态加载的 Skills 拼入 system prompt，让业务规则随请求生效。"""
         if self._skill_manager is None:
             return self.system_prompt
@@ -178,6 +375,7 @@ class BaseAgent:
 
 class GeneralAgent(BaseAgent):
     agent_type    = AgentType.GENERAL
+    allowed_tools = ("get_order_status",)
     system_prompt = (
         "你是 知应 AI 智能客服。友好、简洁地回答用户问题。"
         "如果问题超出你的能力范围，明确说明并建议转接专业客服。"
@@ -186,6 +384,7 @@ class GeneralAgent(BaseAgent):
 
 class TechnicalAgent(BaseAgent):
     agent_type    = AgentType.TECHNICAL
+    allowed_tools = ("get_order_status",)
     system_prompt = (
         "你是技术支持专家。专注于：故障排查、错误诊断、系统配置。"
         "提供清晰的步骤化解决方案。遇到需要后台操作的问题，说明需要升级处理。"
@@ -194,6 +393,7 @@ class TechnicalAgent(BaseAgent):
 
 class BillingAgent(BaseAgent):
     agent_type    = AgentType.BILLING
+    allowed_tools = ("get_order_status", "query_payment", "create_refund_request")
     system_prompt = (
         "你是账单服务专家。专注于：账单查询、退款申请、发票问题、订阅管理。"
         "对财务问题保持准确和专业。涉及实际退款操作时，说明需要人工审核。"
@@ -227,6 +427,10 @@ class AgentOrchestrator:
         base_url: Optional[str] = None,
         model:    str = "claude-3-5-sonnet-20241022",
         skill_manager: Optional[Any] = None,
+        tool_manager: Optional[Any] = None,
+        max_tool_steps: int = 4,
+        request_timeout_s: float = 60.0,
+        tool_calling_enabled: bool = True,
     ):
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
@@ -235,12 +439,21 @@ class AgentOrchestrator:
 
         self._intent_recognizer = IntentRecognizer(api_key=api_key, base_url=base_url, model=model)
         self._skill_manager = skill_manager
+        self._tool_manager = tool_manager
+        self._synthesis_agent = SynthesisAgent()
+        agent_options = {
+            "skill_manager": skill_manager,
+            "tool_manager": tool_manager,
+            "max_tool_steps": max_tool_steps,
+            "request_timeout_s": request_timeout_s,
+            "tool_calling_enabled": tool_calling_enabled,
+        }
 
         # Agent 池：每种类型可有多个实例（水平扩展）
         self._pool: Dict[AgentType, List[BaseAgent]] = {
-            AgentType.GENERAL:   [GeneralAgent(client, model, skill_manager)],
-            AgentType.TECHNICAL: [TechnicalAgent(client, model, skill_manager)],
-            AgentType.BILLING:   [BillingAgent(client, model, skill_manager)],
+            AgentType.GENERAL: [GeneralAgent(client, model, **agent_options)],
+            AgentType.TECHNICAL: [TechnicalAgent(client, model, **agent_options)],
+            AgentType.BILLING: [BillingAgent(client, model, **agent_options)],
         }
 
     def set_skill_manager(self, skill_manager: Optional[Any]) -> None:
@@ -249,6 +462,14 @@ class AgentOrchestrator:
         for agents in self._pool.values():
             for agent in agents:
                 agent._skill_manager = skill_manager
+
+    def set_tool_manager(self, tool_manager: Optional[Any]) -> None:
+        """Replace the shared tool runtime for all agent instances."""
+        self._tool_manager = tool_manager
+        for agents in self._pool.values():
+            for agent in agents:
+                agent._tool_manager = tool_manager
+
 
     # ── 主入口 ────────────────────────────────────────────────────────────────
 
@@ -291,6 +512,7 @@ class AgentOrchestrator:
             intent=req.intent,
             escalated=escalated,
             latency_ms=(time.monotonic() - t0) * 1000,
+            tool_calls=response.tool_calls,
         )
 
     async def run_parallel(self, req: Request, agent_types: List[AgentType]) -> OrchestratorResult:
@@ -300,24 +522,44 @@ class AgentOrchestrator:
         """
         t0 = time.monotonic()
         tasks = [self._execute(req, at) for at in agent_types]
-        responses = await asyncio.gather(*tasks, return_exceptions=True)
+        raw_responses = await asyncio.gather(*tasks, return_exceptions=True)
+        responses: List[AgentResponse] = []
+        for agent_type, response in zip(agent_types, raw_responses):
+            if isinstance(response, AgentResponse):
+                responses.append(response)
+                continue
+            logger.error(
+                "并行 Agent 执行异常: agent=%s error_type=%s",
+                agent_type.value,
+                type(response).__name__,
+            )
+            failed = AgentResponse(
+                agent_type=agent_type,
+                content="该专业 Agent 暂时无法完成处理。",
+                success=False,
+            )
+            failed.work_result = AgentWorkResult.from_agent_response(failed)
+            responses.append(failed)
 
-        # 合并：拼接所有成功响应
-        parts = []
-        for r in responses:
-            if isinstance(r, AgentResponse) and r.success:
-                parts.append(f"[{r.agent_type.value}]\n{r.content}")
-
-        combined = "\n\n".join(parts) if parts else "抱歉，所有 Agent 均处理失败。"
-        escalated = any(isinstance(r, AgentResponse) and r.escalate for r in responses)
+        synthesis_agent = getattr(self, "_synthesis_agent", None)
+        if synthesis_agent is None:
+            synthesis_agent = SynthesisAgent()
+            self._synthesis_agent = synthesis_agent
+        outcome = synthesis_agent.synthesize(responses)
+        escalated = (
+            outcome.requires_human
+            or any(response.escalate for response in responses)
+        )
 
         return OrchestratorResult(
             request_id=req.request_id,
-            response=combined,
+            response=outcome.response,
             agent_type=agent_types[0],
             intent=req.intent,
             escalated=escalated,
             latency_ms=(time.monotonic() - t0) * 1000,
+            tool_calls=outcome.tool_calls,
+            synthesis=outcome.to_public_dict(),
         )
 
     # ── 路由逻辑 ──────────────────────────────────────────────────────────────

@@ -17,11 +17,14 @@ import hashlib
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+import uuid
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Type
 
 from anthropic import AsyncAnthropic
+from pydantic import BaseModel, ValidationError
 
 from core.llm_factory import create_structured_invoker
 from core.structured_invoker import parse_json_array
@@ -47,6 +50,23 @@ class ToolResult:
     cached:         bool = False
     latency_ms:     float = 0.0
     reranked:       bool = False   # 是否经过重排
+
+
+@dataclass
+class ToolExecution:
+    """Sanitized audit record for one tool execution."""
+    execution_id: str
+    tool_name: str
+    agent_type: str
+    request_id: str
+    params: Dict[str, Any]
+    success: bool
+    status: str
+    latency_ms: float
+    cached: bool = False
+    error: Optional[str] = None
+    result_preview: Any = None
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 @dataclass
@@ -133,6 +153,10 @@ class Tool:
     timeout_s:   float = 30.0
     supports_rerank: bool = False            # 是否支持结果重排
     fallback:    Optional[Callable] = None    # sync/async (params, context, error) -> Any
+    input_model: Optional[Type[BaseModel]] = None
+    output_model: Optional[Type[BaseModel]] = None
+    allowed_agents: Set[str] = field(default_factory=set)
+    risk_level: str = "read"
 
     # 运行时状态（不参与构造）
     stats:   ToolStats    = field(default_factory=ToolStats, init=False)
@@ -164,6 +188,7 @@ class MCPToolManager:
         self._model = model
         self._tools: Dict[str, Tool] = {}
         self._cache: Dict[str, tuple] = {}   # key → (result, expire_at)
+        self._executions: List[ToolExecution] = []
         self._rewrite_invoker = rewrite_invoker or create_structured_invoker(
             api_key=api_key,
             model=model,
@@ -193,6 +218,124 @@ class MCPToolManager:
     # ── 核心调用 ──────────────────────────────────────────────────────────────
 
     async def call(
+        self,
+        name: str,
+        params: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        use_cache: bool = True,
+        rerank_top_k: int = 0,
+    ) -> ToolResult:
+        """Controlled tool call with permissions, schemas, timeout, circuit breaker, and audit."""
+        legacy_tool = self._tools.get(name)
+        if (
+            legacy_tool is not None
+            and legacy_tool.input_model is None
+            and legacy_tool.output_model is None
+            and not legacy_tool.allowed_agents
+        ):
+            return await self._call_legacy(
+                name,
+                params,
+                context,
+                use_cache=use_cache,
+                rerank_top_k=rerank_top_k,
+            )
+        raw_params = dict(params or {})
+        tool = self._tools.get(name)
+        if tool is None:
+            return self._finalize_result(
+                ToolResult(success=False, data=None, tool_name=name, error=f"Tool not found: {name}"),
+                raw_params,
+                context,
+            )
+
+        try:
+            self._validate_permission(tool, context)
+            normalized_params = self._validate_params(tool, raw_params)
+        except Exception as ex:
+            error = self._safe_error(ex)
+            logger.warning("Tool call rejected: tool=%s type=%s", name, type(ex).__name__)
+            return self._finalize_result(
+                ToolResult(success=False, data=None, tool_name=name, error=error),
+                raw_params,
+                context,
+            )
+
+        if use_cache and tool.cache_ttl > 0:
+            cached = self._get_cache(name, normalized_params)
+            if cached is not None:
+                tool.stats.total += 1
+                tool.stats.success += 1
+                return self._finalize_result(
+                    ToolResult(success=True, data=cached, tool_name=name, cached=True),
+                    normalized_params,
+                    context,
+                )
+
+        if not tool.breaker.allow():
+            error = f"Tool circuit is open: {name}; retry later"
+            result = await self._fallback_result(tool, normalized_params, context, error)
+            return self._finalize_result(result, normalized_params, context)
+
+        started = time.monotonic()
+        tool.stats.total += 1
+        try:
+            data = await asyncio.wait_for(
+                tool.handler(normalized_params, context),
+                timeout=tool.timeout_s,
+            )
+            data = self._validate_output(tool, data)
+            latency = (time.monotonic() - started) * 1000
+
+            tool.stats.success += 1
+            tool.stats.consecutive_fails = 0
+            tool.stats.record_latency(latency)
+            tool.breaker.record_success()
+
+            if tool.cache_ttl > 0:
+                self._set_cache(name, normalized_params, data, tool.cache_ttl)
+
+            reranked = False
+            if rerank_top_k > 0 and tool.supports_rerank and isinstance(data, list):
+                query = normalized_params.get("query", "")
+                data = await self._rerank(query, data, rerank_top_k)
+                reranked = True
+
+            return self._finalize_result(
+                ToolResult(
+                    success=True,
+                    data=data,
+                    tool_name=name,
+                    latency_ms=latency,
+                    reranked=reranked,
+                ),
+                normalized_params,
+                context,
+            )
+        except asyncio.TimeoutError:
+            latency = (time.monotonic() - started) * 1000
+            tool.stats.record_latency(latency)
+            tool.stats.failed += 1
+            tool.stats.consecutive_fails += 1
+            tool.breaker.record_failure()
+            logger.error("Tool timed out: %s (%.1fs)", name, tool.timeout_s)
+            result = await self._fallback_result(tool, normalized_params, context, "execution timed out")
+            result.latency_ms = latency
+            return self._finalize_result(result, normalized_params, context)
+        except Exception as ex:
+            latency = (time.monotonic() - started) * 1000
+            tool.stats.record_latency(latency)
+            tool.stats.failed += 1
+            tool.stats.consecutive_fails += 1
+            tool.breaker.record_failure()
+            error = self._safe_error(ex)
+            logger.error("Tool failed: %s type=%s", name, type(ex).__name__)
+            result = await self._fallback_result(tool, normalized_params, context, error)
+            result.latency_ms = latency
+            return self._finalize_result(result, normalized_params, context)
+
+    async def _call_legacy(
         self,
         name: str,
         params: Dict[str, Any],
@@ -468,6 +611,138 @@ class MCPToolManager:
             return item
         return {key: value for key, value in item.items() if not key.startswith("_")}
 
+    def definitions_for(
+        self,
+        agent_type: str,
+        allowed_names: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return Anthropic tool definitions filtered by agent permissions."""
+        name_filter = set(allowed_names) if allowed_names is not None else None
+        definitions: List[Dict[str, Any]] = []
+        for name, tool in self._tools.items():
+            if name_filter is not None and name not in name_filter:
+                continue
+            if tool.allowed_agents and agent_type not in tool.allowed_agents:
+                continue
+            definitions.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.schema,
+                }
+            )
+        return definitions
+
+    def tool_catalog(self) -> List[Dict[str, Any]]:
+        """Return a public tool catalog without executable handlers."""
+        return [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "risk_level": tool.risk_level,
+                "allowed_agents": sorted(tool.allowed_agents) if tool.allowed_agents else ["all"],
+                "timeout_s": tool.timeout_s,
+                "cache_ttl": tool.cache_ttl,
+            }
+            for tool in self._tools.values()
+        ]
+
+    def get_recent_executions(
+        self,
+        limit: int = 50,
+        *,
+        request_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        values = self._executions
+        if request_id:
+            values = [item for item in values if item.request_id == request_id]
+        bounded_limit = max(1, min(int(limit), 200))
+        return [asdict(item) for item in values[-bounded_limit:]]
+
+    @staticmethod
+    def _validate_permission(tool: Tool, context: Optional[Dict[str, Any]]) -> None:
+        if not tool.allowed_agents:
+            return
+        agent_type = str((context or {}).get("agent_type") or "")
+        if not agent_type:
+            raise PermissionError(f"Tool {tool.name} requires an agent identity")
+        if agent_type not in tool.allowed_agents:
+            raise PermissionError(f"Agent {agent_type} cannot call tool {tool.name}")
+
+    @staticmethod
+    def _validate_output(tool: Tool, data: Any) -> Any:
+        if tool.output_model is None:
+            return data
+        value = (
+            data
+            if isinstance(data, tool.output_model)
+            else tool.output_model.model_validate(data)
+        )
+        return value.model_dump(mode="json")
+
+    def _finalize_result(
+        self,
+        result: ToolResult,
+        params: Dict[str, Any],
+        context: Optional[Dict[str, Any]],
+    ) -> ToolResult:
+        call_context = context or {}
+        if result.cached:
+            status = "cached"
+        elif result.success and result.error:
+            status = "degraded"
+        elif result.success:
+            status = "success"
+        else:
+            status = "failed"
+        execution = ToolExecution(
+            execution_id=f"tool-{uuid.uuid4().hex[:12]}",
+            tool_name=result.tool_name,
+            agent_type=str(call_context.get("agent_type") or "system"),
+            request_id=str(call_context.get("request_id") or ""),
+            params=self._sanitize_for_audit(params),
+            success=result.success,
+            status=status,
+            latency_ms=round(result.latency_ms, 1),
+            cached=result.cached,
+            error=result.error,
+            result_preview=self._sanitize_for_audit(result.data),
+        )
+        self._executions.append(execution)
+        if len(self._executions) > 1000:
+            del self._executions[:250]
+        return result
+
+    @classmethod
+    def _sanitize_for_audit(cls, value: Any, key: str = "") -> Any:
+        sensitive_markers = ("password", "secret", "token", "api_key", "card", "verification_code")
+        if any(marker in key.lower() for marker in sensitive_markers):
+            return "***"
+        if isinstance(value, dict):
+            return {
+                str(item_key): cls._sanitize_for_audit(item_value, str(item_key))
+                for item_key, item_value in list(value.items())[:30]
+            }
+        if isinstance(value, (list, tuple)):
+            return [cls._sanitize_for_audit(item, key) for item in list(value)[:30]]
+        if isinstance(value, str):
+            return value if len(value) <= 500 else value[:500] + "..."
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return str(value)[:500]
+
+    @staticmethod
+    def _safe_error(ex: BaseException) -> str:
+        if isinstance(ex, ValidationError):
+            details = []
+            for error in ex.errors(include_input=False, include_url=False)[:5]:
+                location = ".".join(str(part) for part in error.get("loc", ()))
+                prefix = f"{location}: " if location else ""
+                details.append(prefix + str(error.get("msg", "validation failed")))
+            return "Parameter validation failed: " + "; ".join(details)
+        message = str(ex).strip()
+        return message[:500] if message else type(ex).__name__
+
     def invalidate_cache(self, tool_name: Optional[str] = None) -> None:
         """知识变更或 collection 切换后使旧检索结果失效。"""
         if tool_name is None:
@@ -510,7 +785,19 @@ class MCPToolManager:
 
     _TYPE_MAP = {"string": str, "number": (int, float), "integer": int, "boolean": bool, "array": list, "object": dict}
 
-    def _validate_params(self, tool: Tool, params: Dict[str, Any]) -> None:
+    def _validate_params(self, tool: Tool, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Use strict Pydantic schemas when available; preserve legacy JSON-schema tools."""
+        if tool.input_model is not None:
+            value = (
+                params
+                if isinstance(params, tool.input_model)
+                else tool.input_model.model_validate(params)
+            )
+            return value.model_dump(mode="json", exclude_none=True)
+        self._validate_params_legacy(tool, params)
+        return dict(params)
+
+    def _validate_params_legacy(self, tool: Tool, params: Dict[str, Any]) -> None:
         """根据工具的 JSON Schema 校验参数，不合法时抛出 ValueError。"""
         schema = tool.schema
         required = schema.get("required", [])

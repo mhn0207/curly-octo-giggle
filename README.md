@@ -1,8 +1,12 @@
 # 知应 AI｜多 Agent 智能客服平台
 
+[![CI](https://github.com/Biscuit-AI531/ZhiYing/actions/workflows/ci.yml/badge.svg)](https://github.com/Biscuit-AI531/ZhiYing/actions/workflows/ci.yml) ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white) ![License MIT](https://img.shields.io/badge/License-MIT-green.svg)
+
 知应 AI 是一个面向智能客服场景的全栈 AI 平台。后端基于 FastAPI 和 Anthropic API，前端采用 Vue 3 + Vite，组合了多轮对话记忆、意图识别、多 Agent 路由、RAG 知识库、可热加载 Skills、在线监控和自动评测。
 
 当前版本为 `2.0.0`，既保留原有 ChromaDB 检索与 JSON 输出链路，也提供可灰度启用的 LangChain 结构化输出和新版 RAG。
+
+![知应 AI 客服工作台](docs/images/zhiying-workbench.png)
 
 ## 核心能力
 
@@ -15,6 +19,35 @@
 - 稳定性保护：缓存、超时、熔断、降级和旧实现回退
 - 在线监控：成功率、延迟、异常检测、Prometheus 指标和 Webhook 告警
 - 自动评测：意图准确率、Macro-F1、LLM-as-Judge、RAG Recall@K 和回归检测
+
+## 系统架构
+
+```mermaid
+flowchart TB
+    U["用户 / 客服人员"] --> FE["Vue 3 客服工作台"]
+    FE --> API["FastAPI API 层"]
+
+    API --> MEM["三级记忆上下文"]
+    API --> RAG["RAG 查询改写、召回与重排"]
+    API --> INTENT["LLM + Embedding + 规则意图融合"]
+    MEM --> ORCH["Agent Orchestrator"]
+    RAG --> ORCH
+    INTENT --> ORCH
+
+    ORCH --> GENERAL["General Agent"]
+    ORCH --> TECH["Technical Agent"]
+    ORCH --> BILLING["Billing Agent"]
+    GENERAL --> SKILLS["Skills / 内部 ToolManager"]
+    TECH --> SKILLS
+    BILLING --> SKILLS
+
+    MEM <--> REDIS["Redis 工作记忆"]
+    MEM <--> CHROMA["ChromaDB 历史与画像"]
+    RAG <--> CHROMA
+    API --> OBS["Monitor / Prometheus / Evaluation"]
+```
+
+`mcp/` 目前是内部工具管理层，标准 MCP Server/Client 接入属于下一阶段演进方向，README 不把它包装成已经完成的能力。
 
 ## 请求链路
 
@@ -39,6 +72,21 @@ flowchart LR
 5. 把记忆、知识库结果、实体和匹配的 Skill 注入模型上下文。
 6. 保存本轮消息，并在后台更新用户画像。
 
+## 演示流程
+
+推荐用一个同时包含技术和账单问题的请求展示完整链路：`订单 A123 登录提示 401，而且被重复扣款 99 元，请帮我处理。`
+
+| 步骤 | 系统动作 | 可观察结果 |
+|---|---|---|
+| 1 | 工作台调用 `POST /chat` | 返回会话 ID、延迟和是否使用知识库 |
+| 2 | 提取订单号、错误码、金额等实体 | 监控数据中可查看意图与路由结果 |
+| 3 | 识别复合意图 | Technical 与 Billing Agent 并行处理各自子问题 |
+| 4 | 召回排障与退款知识并注入匹配 Skill | 回答包含业务依据，不只依赖模型常识 |
+| 5 | 聚合两个 Agent 的结果 | 一次响应同时给出 401 排查和重复扣款处理建议 |
+| 6 | 写回 Redis 与 ChromaDB | 使用相同 `conv_id` 追问时保留上下文 |
+
+演示时可同时打开工作台、Swagger `/docs` 和 `/monitor`，分别展示产品界面、API 契约与可观测性。
+
 ## 技术栈
 
 - Python 3.12
@@ -54,10 +102,12 @@ flowchart LR
 ## 目录结构
 
 ```text
-zhiying-ai/
+ZhiYing/
+├── .github/        GitHub Actions 持续集成
 ├── agents/         Agent 定义、路由、并行协作和降级
 ├── api/            FastAPI 应用入口和 HTTP API
 ├── core/           意图识别、Skill 加载、结构化输出
+├── docs/images/    README 界面截图
 ├── evaluation/     意图、对话质量和 RAG 评测
 ├── frontend/       Vue 3 客服工作台和前端 Nginx 配置
 ├── mcp/            内部工具管理器和旧版知识库
@@ -68,6 +118,7 @@ zhiying-ai/
 ├── tests/          单元测试和集成测试
 ├── config/         Nginx、Prometheus 配置
 ├── Dockerfile
+├── LICENSE
 └── docker-compose.yml
 ```
 
@@ -77,20 +128,19 @@ zhiying-ai/
 
 ### 1. 准备配置
 
-在项目根目录创建或修改 `.env`。至少需要一个有效的 Anthropic API Key：
+复制安全的配置模板：
 
-```env
-ANTHROPIC_API_KEY=your_api_key
-ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
-# 使用 Anthropic-compatible 服务时填写；官方服务可留空
-ANTHROPIC_BASE_URL=
-# Docker Compose 会用它保护 Redis，请在生产环境设置强密码
-REDIS_PASSWORD=change_me
-
-LOG_LEVEL=INFO
+```powershell
+Copy-Item .env.example .env
 ```
 
-不要提交 `.env`。它已经被 `.gitignore` 排除。
+Linux/macOS：
+
+```bash
+cp .env.example .env
+```
+
+然后编辑 `.env`，至少填写 `ANTHROPIC_API_KEY`，并在 Docker Compose 或生产环境中设置强 `REDIS_PASSWORD`。`.env` 已被 `.gitignore` 排除；只提交不含真实凭据的 `.env.example`。
 
 ### 2. 使用 Docker Compose 启动
 
@@ -180,6 +230,7 @@ curl -X POST http://localhost:8000/chat \
 ```json
 {
   "conv_id": "generated-conversation-id",
+  "request_id": "generated-request-id",
   "response": "...",
   "intent": "technical",
   "agent_type": "technical",
@@ -226,10 +277,60 @@ curl -X POST http://localhost:8000/knowledge/add \
 | `GET` | `/knowledge/stats` | 知识库分片统计 |
 | `GET` | `/skills` | 已加载的 Skills |
 | `POST` | `/skills/reload` | 热加载 Skills |
+| `GET` | `/tools` | 业务工具、风险级别、Agent 权限和运行统计 |
+| `GET` | `/tools/executions` | 脱敏后的最近工具调用轨迹 |
 | `GET` | `/monitor` | Agent、工具、结构化输出和 RAG 统计 |
 | `GET` | `/metrics` | Prometheus 指标 |
 | `POST` | `/eval/run` | 意图与对话质量评测 |
 | `POST` | `/eval/rag` | 新旧 RAG 双后端评测 |
+
+## 业务 Tool Calling
+
+General、Technical 和 Billing Agent 会获得各自允许使用的 Anthropic 原生工具定义。模型选择工具和参数后，系统执行权限校验、Pydantic Schema 校验、超时、熔断、缓存和审计，再把 `tool_result` 返回模型生成最终回答。
+
+| 工具 | 权限 | 风险 | 说明 |
+|---|---|---|---|
+| `get_order_status` | General / Technical / Billing | 只读 | 查询订单状态、商品和金额 |
+| `query_payment` | Billing | 只读 | 查询支付记录并检测重复成功扣款 |
+| `create_refund_request` | Billing | 中风险写入 | 只创建 `pending_review` 退款申请，不执行真实退款 |
+
+内置可重复 Mock 场景：订单 `A123` 有两笔 99 元成功支付。请求：
+
+```text
+订单 A123 被重复扣款了，请帮我退款。
+```
+
+预期工具轨迹：
+
+```text
+BillingAgent
+  → get_order_status
+  → query_payment
+  → create_refund_request
+  → 返回 pending_review，等待人工审核
+```
+
+`POST /chat` 的 `tool_calls` 字段会返回本次轨迹；`GET /tools/executions` 可查看最近的脱敏审计记录。单请求最大调用步数和总超时由环境变量控制。
+
+## 多 Agent 结构化结果综合
+
+复合请求会并行派发给 Technical 和 Billing Agent。每个响应先转换为
+`AgentWorkResult`，再由 `SynthesisAgent` 统一处理，不再直接拼接字符串：
+
+1. 工具返回值进入 `confirmed_facts`，模型文本只能作为处理建议。
+2. 相同事实按稳定键去重，工具结果优先于知识库和模型推断。
+3. 同级可信来源不一致时生成 `conflicts`，订单、支付和退款冲突会触发人工确认。
+4. 单个 Agent 失败时保留其他有效结果，并在回答中明确标记部分降级。
+5. 退款申请只标记为 `requires_approval`，不会被描述成已经完成退款。
+
+`POST /chat` 在复合请求下额外返回 `synthesis`：
+
+- `confirmed_facts`：经过来源分级和去重的事实
+- `conflicts`：冲突候选、是否阻断及处理规则
+- `partial_failure`：是否有 Agent 处理失败
+- `requires_approval` / `requires_human`：审核与人工介入信号
+- `agents`：参与综合的 Agent 及其事实、工具调用数量
+
 
 ## Skills
 
@@ -319,6 +420,8 @@ ZHIYING_RAG_CANARY_PERCENT=0
 
 ## 测试与验证
 
+`.github/workflows/ci.yml` 会在每次 push 和 pull request 时自动执行后端测试、Python 依赖与语法检查，以及前端生产构建。
+
 运行测试：
 
 ```powershell
@@ -333,7 +436,7 @@ ZHIYING_RAG_CANARY_PERCENT=0
 docker compose config --quiet
 ```
 
-当前仓库包含 58 个测试，覆盖 API 契约、意图融合、实体提取、结构化输出、RAG 切片与幂等、并发、灰度、回退和检索评测。
+当前仓库包含 72 个测试，覆盖 API 契约、意图融合、实体提取、业务工具权限与幂等、原生 Tool Calling、多 Agent 事实去重与冲突综合、结构化输出、RAG 切片与幂等、并发、灰度、回退和检索评测。
 
 ## 监控
 
@@ -360,6 +463,9 @@ docker compose config --quiet
 | `CHROMA_PERSIST_DIRECTORY` | `/app/data/chroma` | 本地回退目录 |
 | `ZHIYING_SKILLS_DIR` | `./skills` | Skill 根目录 |
 | `ZHIYING_SKILLS_MAX_PROMPT_CHARS` | `5000` | 单次 Skill 注入总长度 |
+| `ZHIYING_AGENT_TOOL_CALLING` | `true` | 是否启用 Agent 原生业务工具调用 |
+| `ZHIYING_AGENT_MAX_TOOL_STEPS` | `4` | 单请求最大工具调用步数 |
+| `ZHIYING_AGENT_REQUEST_TIMEOUT` | `60` | Agent 单请求总超时，秒 |
 | `VITE_ZHIYING_API_URL` | `/api/zhiying` | 前端开发或构建时的 API 地址 |
 | `ZHIYING_API_UPSTREAM` | `zhiying:8000` | 前端 Nginx 的后端服务地址 |
 | `MONITOR_INTERVAL` | `10` | 监控采集周期，秒 |
@@ -376,3 +482,7 @@ docker compose config --quiet
 - 用户画像会在每轮聊天后异步调用 LLM 更新，需要关注供应商限流、延迟和费用。
 - 首次使用本地 Chroma Embedding 时可能需要下载 `all-MiniLM-L6-v2` ONNX 模型。
 - 外部供应商的 tool calling 兼容性需要用真实部署环境做 smoke test。
+
+## License
+
+本项目采用 [MIT License](LICENSE)。
