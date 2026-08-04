@@ -15,7 +15,6 @@ logs/
 
 .env
 .env.*
-!.env
 
 data/chroma/
 data/**/*.sqlite3
