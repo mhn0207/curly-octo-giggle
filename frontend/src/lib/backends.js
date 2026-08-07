@@ -35,6 +35,20 @@ export async function requestMonitor(settings) {
   return requestJson(backendMeta(settings).baseUrl, '/monitor')
 }
 
+export async function requestToolsCatalog(settings) {
+  return requestJson(backendMeta(settings).baseUrl, '/tools')
+}
+
+export async function requestToolExecutions(settings, limit = 20, requestId = '') {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (requestId) params.set('request_id', requestId)
+  return requestJson(backendMeta(settings).baseUrl, `/tools/executions?${params}`)
+}
+
+export async function requestSkillsSummary(settings) {
+  return requestJson(backendMeta(settings).baseUrl, '/skills')
+}
+
 export async function requestKnowledgeStats(settings) {
   return requestJson(backendMeta(settings).baseUrl, '/knowledge/stats')
 }
@@ -102,8 +116,13 @@ async function requestJson(baseUrl, path, options = {}) {
     data = text
   }
   if (!response.ok) {
-    const detail = typeof data === 'string' ? data : JSON.stringify(data)
-    throw new Error(`${response.status} ${response.statusText}: ${detail}`)
+    const detail = typeof data === 'string'
+      ? data
+      : data?.detail || data?.message || (data ? JSON.stringify(data) : '')
+    const error = new Error(detail || `服务返回 ${response.status}`)
+    error.status = response.status
+    error.payload = data
+    throw error
   }
   return data
 }
