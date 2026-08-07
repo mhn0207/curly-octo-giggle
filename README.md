@@ -1,6 +1,6 @@
 # 知应 AI｜多 Agent 智能客服平台
 
-[![CI](https://github.com/mhn0207/ZhiYingAI/actions/workflows/ci.yml/badge.svg)](https://github.com/mhn0207/ZhiYingAI/actions/workflows/ci.yml) ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+[![CI](https://github.com/mhn0207/ZhiYingAI/actions/workflows/ci.yml/badge.svg)](https://github.com/mhn0207/ZhiYingAI/actions/workflows/ci.yml) ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white) ![License MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
 知应 AI 是一个面向智能客服场景的全栈 AI 平台。后端基于 FastAPI 和 Anthropic API，前端采用 Vue 3 + Vite，组合了多轮对话记忆、意图识别、多 Agent 路由、RAG 知识库、可热加载 Skills、在线监控和自动评测。
 
@@ -483,6 +483,6 @@ docker compose config --quiet
 - 首次使用本地 Chroma Embedding 时可能需要下载 `all-MiniLM-L6-v2` ONNX 模型。
 - 外部供应商的 tool calling 兼容性需要用真实部署环境做 smoke test。
 
-## Copyright
+## License
 
-Copyright (c) 2026 mhn0207. All rights reserved.
+本项目采用 [MIT License](LICENSE)。
