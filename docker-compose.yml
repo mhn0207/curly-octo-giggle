@@ -174,10 +174,6 @@ services:
 networks:
   zhiying-network:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.28.0.0/16
-
 # ── 数据卷 ──────────────────────────────────────────────────────────────────
 volumes:
   redis-data:
