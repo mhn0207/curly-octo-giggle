@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 知应 AI 智能客服系统 - Docker 部署脚本
+# 知应 AI 企业服务协同 Agent 平台 - Docker 部署脚本
 
 
 set -e
@@ -254,7 +254,7 @@ restore_data() {
 # 函数：显示帮助信息
 show_help() {
     cat << EOF
-知应 AI 智能客服系统 - Docker 部署脚本
+知应 AI 企业服务协同 Agent 平台 - Docker 部署脚本
 
 用法: ./docker-deploy.sh [命令]
 

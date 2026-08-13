@@ -5,7 +5,7 @@
         <span class="brand-mark" aria-hidden="true">知</span>
         <span>
           <strong>知应 AI</strong>
-          <small>多 Agent 智能客服</small>
+          <small>企业服务协同 Agent 平台</small>
         </span>
       </a>
       <button class="icon-button sidebar-close" type="button" aria-label="关闭导航" @click="$emit('close')">
@@ -133,7 +133,7 @@ const navItems = [
   },
   {
     id: 'knowledge',
-    label: '知识运营',
+    label: '知识管理',
     caption: 'RAG 检索与文档导入',
     path: 'M4 5.5A2.5 2.5 0 016.5 3H11v16H6.5A2.5 2.5 0 014 16.5v-11zm16 0A2.5 2.5 0 0017.5 3H13v16h4.5a2.5 2.5 0 002.5-2.5v-11z'
   },

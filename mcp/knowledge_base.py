@@ -253,6 +253,6 @@ class KnowledgeBase:
         return chunks
 
     def _load_default_docs(self) -> None:
-        """导入默认知识库文档（客服场景常见问题）。"""
+        """导入默认知识库文档（企业服务场景常见问题）。"""
         self.add_documents(DEFAULT_DOCUMENTS)
         logger.info(f"已导入默认知识库: {len(DEFAULT_DOCUMENTS)} 篇文档")

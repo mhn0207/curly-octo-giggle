@@ -4,7 +4,7 @@
       <header class="chat-card-header">
         <div>
           <span class="section-kicker">LIVE CONVERSATION</span>
-          <h2 id="chat-title">智能客服对话</h2>
+          <h2 id="chat-title">服务协同对话</h2>
           <p>{{ conversationId ? '会话 ' + conversationId : '新会话将在首次回复后自动创建' }}</p>
         </div>
         <button v-if="messages.length" class="button button-ghost button-small" type="button" @click="$emit('clear')">
@@ -60,7 +60,7 @@
       </div>
 
       <form class="composer" @submit.prevent="submit">
-        <label class="sr-only" for="chat-message">输入客服问题</label>
+        <label class="sr-only" for="chat-message">输入复杂业务请求</label>
         <textarea
           id="chat-message"
           :value="draft"
@@ -108,7 +108,7 @@ const selectedMessageId = ref('')
 const prompts = [
   '退款多久到账？',
   '订单 #12345 支付成功但状态异常',
-  '我无法登录账号，需要技术支持'
+  '账号登录提示 401，请协助排查'
 ]
 
 const tracedMessages = computed(() => props.messages.filter((item) => item.trace))

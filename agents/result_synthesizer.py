@@ -520,10 +520,10 @@ class SynthesisAgent:
             return "抱歉，本次参与协作的 Agent 均未能完成处理，建议稍后重试或转人工客服。"
 
         role_names = {
-            "general": "通用客服",
-            "technical": "技术支持",
-            "billing": "账单服务",
-            "escalation": "人工升级",
+            "general": "服务协调 Agent",
+            "technical": "技术可靠性 Agent",
+            "billing": "收入与合规 Agent",
+            "escalation": "人工升级通道",
         }
         lines = ["我已综合各专业 Agent 的处理结果。"]
 

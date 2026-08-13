@@ -2,7 +2,7 @@
 知应 AI Skill 加载器。
 
 Skill 是一段可热加载的业务能力说明，用来补充 Agent 的 system prompt。
-它适合放置企业话术、处理流程、合规边界、排障 SOP 等需要运营侧快速调整的规则。
+它适合放置企业话术、处理流程、合规边界、排障 SOP 等需要业务侧快速调整的规则。
 """
 import json
 import logging

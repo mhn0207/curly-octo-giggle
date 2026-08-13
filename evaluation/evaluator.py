@@ -93,17 +93,19 @@ class LLMJudge:
     注意：LLM Judge 本身也有偏差，建议定期用人工标注校准。
     """
 
-    JUDGE_PROMPT = """你是一个客服质量评估专家。请对以下客服响应进行评分。
+    JUDGE_PROMPT = """你是「知应 AI 企业服务协同 Agent 平台」的质量评估模块。请评估以下 Agent 响应是否准确、安全并真正推动业务问题解决。
 
-用户问题: {question}
+业务请求: {question}
 Agent 响应: {response}
 {context_section}
 
 请从以下四个维度评分（0.0-1.0）：
-- relevance: 响应是否直接针对用户问题（0=完全无关，1=完全相关）
-- accuracy: 信息是否准确无误（0=明显错误，1=完全正确）
-- completeness: 是否完整解决了用户需求（0=完全没解决，1=完全解决）
-- helpfulness: 用户能否据此采取行动（0=毫无帮助，1=非常有帮助）"""
+- relevance: 是否直接回应主要诉求，并正确处理复合问题中的各部分（0=完全无关，1=完全相关）
+- accuracy: 是否忠于给定背景和已核实事实，且没有编造政策、工具结果、处理状态或确定性承诺（0=明显错误，1=完全准确）
+- completeness: 是否覆盖必要信息、风险边界、未解决事项和需要协作或升级的部分（0=严重缺失，1=完整处理）
+- helpfulness: 是否给出清晰、可执行、低风险的下一步，并区分已完成、待核验和待审核状态（0=无法行动，1=可以直接推进）
+
+评分必须以提供的背景为依据。背景不足时，不应因 Agent 谨慎说明无法确认而扣分；如果 Agent 在缺少依据时声称已查询、已处理、必然成功或固定到账，应显著降低 accuracy 和 helpfulness。"""
 
     def __init__(self, client: AsyncAnthropic, model: str, structured_invoker: Optional[Any] = None):
         self._client = client

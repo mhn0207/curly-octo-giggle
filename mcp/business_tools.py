@@ -155,7 +155,7 @@ class MockBusinessRepository:
             "12345": _Order(
                 order_id="12345",
                 customer_id="demo-user",
-                product="客服知识库扩展包",
+                product="企业服务知识库扩展包",
                 status="shipped",
                 amount=Decimal("299.00"),
                 currency="CNY",

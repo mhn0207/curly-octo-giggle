@@ -136,8 +136,8 @@ import {
 import { friendlyError } from './lib/presentation'
 
 const VIEW_META = {
-  chat: { kicker: 'MULTI-AGENT SERVICE', title: '对话工作台' },
-  knowledge: { kicker: 'RAG KNOWLEDGE BASE', title: '知识运营' },
+  chat: { kicker: 'MULTI-AGENT OPERATIONS', title: '对话工作台' },
+  knowledge: { kicker: 'RAG KNOWLEDGE BASE', title: '知识管理' },
   monitor: { kicker: 'SYSTEM OBSERVABILITY', title: '运行监控' }
 }
 

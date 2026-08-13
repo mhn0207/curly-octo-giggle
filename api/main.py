@@ -1,5 +1,5 @@
 """
-知应 AI｜多 Agent 智能客服平台 — FastAPI 入口
+知应 AI｜企业服务协同 Agent 平台 — FastAPI 入口
 
 所有核心组件在 lifespan 中初始化，通过环境变量配置。
 """
@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 
 BANNER = r"""
    ╔══════════════════════╗
-   ║   知应 AI v2.0       ║
-   ║  多 Agent智能客服平台 ║
+   ║   知应 AI v2.0        ║
+   ║ 企业服务协同 Agent 平台  ║
    ╚══════════════════════╝
 """
 
@@ -251,7 +251,7 @@ async def lifespan(app: FastAPI):
 
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="知应 AI｜多 Agent 智能客服平台",
+    title="知应 AI｜企业服务协同 Agent 平台",
     version="2.0.0",
     lifespan=lifespan,
     docs_url="/docs",
@@ -315,7 +315,7 @@ async def reload_skills():
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     """
-    主对话接口。完整流程：
+    复杂业务请求统一入口。完整流程：
       记忆读取 → 意图识别 → Agent 路由 → 执行 → 记忆写入
     """
     if _orchestrator is None or _memory is None:
@@ -403,7 +403,11 @@ async def _build_knowledge_context(message: str, top_k: int = 3) -> tuple[str, b
 
         if not used:
             return "", False
-        parts.append("请优先依据以上知识库内容回答；如果知识库内容不足，再结合通用客服能力说明。")
+        parts.append(
+            "以上内容是本轮可用的企业知识依据。仅引用与用户问题直接相关且未过时的内容；"
+            "若知识不足或存在冲突，应明确说明无法确认，并给出可验证的业务处理路径，"
+            "不得补写政策、订单状态或处理结果。"
+        )
         return "\n".join(parts), True
     except Exception as ex:
         logger.warning(f"构建知识库上下文失败: {ex}")

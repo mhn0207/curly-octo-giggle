@@ -217,14 +217,26 @@ class IntentRecognizer:
                 for m in history[-3:]
             )
 
-        task_prompt = f"""你是客服意图分析专家。根据示例和最近对话判断用户意图。
+        task_prompt = f"""你是「知应 AI 企业服务协同 Agent 平台」的请求理解模块。请根据用户当前消息、示例和最近对话，选择最能代表本轮主要诉求的一个意图。
+
+分类边界：
+- query：查询订单、物流、政策、权益或其他业务信息
+- request：要求取消、修改、提交申请等业务操作
+- technical：登录、错误码、崩溃、接口、配置或系统异常
+- billing：支付、扣款、退款、发票、订阅或账务争议
+- account：账户资料、账号状态或账户管理
+- complaint：表达不满但没有明确要求人工升级
+- escalation：明确要求人工、投诉升级或负责人介入
+- greeting / feedback / other：问候、正向反馈或无法归类
+
+如果消息同时包含多个领域，选择用户最需要优先解决的主诉求，并在理由中指出复合问题，供下游多 Agent 协作。不要因为出现负面措辞就直接判为 escalation，也不要把“咨询退款规则”和“明确申请退款”混为一类。最近对话只用于消解指代和补全上下文，不得覆盖当前消息中的明确诉求。
 
 示例:
 {examples}
 {ctx}
 用户消息: "{message}"
 
-请给出意图、0-1 置信度、一句话理由，以及订单号、产品、日期、金额和错误码实体。
+请给出意图、0-1 置信度、一句话理由，并提取订单号、产品、日期、金额和错误码实体。只提取消息或最近对话中明确出现的值，不要推测缺失实体。
 可选意图: {", ".join(c.value for c in IntentCategory)}"""
         task_prompt = self._clean_text(task_prompt)
         legacy_prompt = self._clean_text(task_prompt + """

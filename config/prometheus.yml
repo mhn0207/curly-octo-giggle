@@ -1,4 +1,4 @@
-# Prometheus 配置文件 — 知应 AI｜多 Agent 智能客服平台
+# Prometheus 配置文件 — 知应 AI｜企业服务协同 Agent 平台
 
 global:
   scrape_interval: 15s

@@ -4,7 +4,7 @@
       <div>
         <span class="section-kicker">KNOWLEDGE OPERATIONS</span>
         <h2 id="knowledge-title">让知识成为 Agent 的可靠依据</h2>
-        <p>验证 RAG 召回质量，维护客服政策，并将新文档即时加入知识库。</p>
+        <p>验证 RAG 召回质量，维护企业服务规范，并将新文档即时加入知识库。</p>
       </div>
       <div class="hero-stat">
         <strong>{{ knowledgeCount }}</strong>
@@ -81,7 +81,7 @@
       <div v-else class="pane-empty">
         <span aria-hidden="true">⌕</span>
         <strong>还没有检索结果</strong>
-        <p>输入一个真实客服问题，观察知识库能否召回正确政策。</p>
+        <p>输入一个真实业务问题，观察知识库能否召回正确规范。</p>
       </div>
     </section>
 
@@ -89,7 +89,7 @@
       <div class="pane-heading">
         <div>
           <span class="section-kicker">CONTENT INGESTION</span>
-          <h3>导入客服知识</h3>
+          <h3>导入业务知识</h3>
           <p>可以直接录入一条政策，也可以上传 TXT、Markdown 或 JSON 文档。</p>
         </div>
       </div>

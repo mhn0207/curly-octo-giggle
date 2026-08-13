@@ -1,8 +1,8 @@
 const AGENT_LABELS = {
-  general: '通用客服',
-  technical: '技术支持',
-  billing: '账单与退款',
-  escalation: '人工升级',
+  general: '服务协调 Agent',
+  technical: '技术可靠性 Agent',
+  billing: '收入与合规 Agent',
+  escalation: '人工升级通道',
   system: '系统'
 }
 
